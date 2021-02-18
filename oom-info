@@ -1,0 +1,32 @@
+#!/bin/bash
+
+usage() {
+	echo "usage: $(basename $0) [<ARGS>]"
+	echo "Args:"
+	echo "  -n | --number <num>             Show <num> of records of top order by rss"
+	echo
+}
+
+OLDIFS=$IFS
+IFS=$'\n'
+n=0
+num=10
+page_size_b=$(getconf PAGE_SIZE)
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		"-n"|"--number") num=$2; shift 2;;
+		"-h"|"--help") usage; exit 1;;
+		*) echo "Unknown arg '$1'"; exit 1;;
+	esac
+done
+
+for d in $(fgrep 'Out of memory' /var/log/messages | cut -d: -f1-3); do
+	n=$(($n+1))
+	echo "[$d] $(fgrep "$d" /var/log/messages | fgrep Out | cut -d: -f4- | tail -n +$n | head -n 1)"
+	(
+	echo "proc rss(kb) virt(kb)"
+        echo "-------- -------- ---------"
+	fgrep "$d" /var/log/messages | cut -d: -f4- | grep -P '\[\ *\d+\]' | cut -d\] -f2- | awk "{ rss[\$8] += \$4; virt[\$8] += \$3} END{ for (el in rss) { print el,rss[el]*1024*$page_size_b/1024,virt[el]*1024*$page_size_b/1024} }" | sort -n -k2 | tail -n$num
+	) | column -t
+done
