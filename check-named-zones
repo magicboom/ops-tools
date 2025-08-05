@@ -1,0 +1,74 @@
+#!/bin/bash
+
+usage() {
+  echo "Usage: $(basename $0) [-d|--debug] [-z|--zones-dir <path-to-dir>] [-E|--zone-file-extension <extension>]"
+}
+
+err() {
+  echo "ERROR: $@"
+}
+
+warn() {
+  echo "WARNING: $@"
+}
+
+debug() {
+	[ "$debug" -eq 1 ] && echo "DEBUG: $@"
+}
+
+zonesDir=/var/named/master
+zoneFileExt=""
+debug=0
+
+while [ $# -gt 0 ]; do
+	case $1 in
+		"-D"|"--zones-dir")
+			[ -z "$2" -o ! -d "$2" ] && { err "Invalid value for '$1'"; usage; exit 1; }
+		       	zonesDir=$2
+			shift 2
+		;;
+		"-E"|"--zone-file-extension")
+			[ -z "$2" ] && { err "Invalid value for '$1'"; usage; exit 1; }
+		       	zoneFileExt=$2
+			shift 2
+		;;
+		"-d"|"--debug")
+			debug=1
+			shift
+		;;
+		*)
+			err "Unknown argument '$1'"
+			usage
+			exit 1
+		;;
+	esac
+done
+
+#[ -d "$zonesDir" ] && { err "Unable to read directory '$zonesDir'"; exit 1; }
+#cd "$zonesDir" || { err "Unable to change dir to '$zonesDir'"; exit 1; }
+for zoneFile in $(find $zonesDir -type f); do
+	fgrep SOA $zoneFile -q || { warn "File '$zoneFile' has no SOA substring, looks like it is not zone file"; continue; }
+	zoneName=$(basename "$zoneFile" "$zoneFileExt")
+	echo -n "Syntax of '$zoneName'... "
+	named-checkzone "$zoneName" $zoneFile 2>&1 | egrep -q '^OK$' || { echo "FAIL"; continue; }
+	echo "OK"
+	errorsList=()
+	serial=$(named-checkzone "$zoneName" $zoneFile 2>&1 | fgrep serial | awk '{print $NF}')
+	debug "Zone $zoneName: local serial: $serial"
+	nsList=$(host -t ns $zoneName 8.8.8.8 2>&1| fgrep 'name server' | awk '{print $NF}')
+	debug "Zone $zoneName: nameservers: $nsList"
+	n=$(echo "$nsList" | wc -w)
+	echo "$n" | egrep -q '^[0-9]+$' || { err "Unable to get nameservers for '$zoneName'"; continue; }
+	[ "$n" -lt "2" ] && { err "Invalid namber of nameservers for '$zoneName' (list: '$nsList')"; continue; }
+	for ns in $nsList; do
+		echo -n "Serial of '$zoneName' on '$ns'... "
+		soa=$(host -t soa $zoneName $ns 2>&1| fgrep 'has SOA record')
+		debug "Zone $zoneName: nameserver '$ns': SOA: $soa"
+		[ -z "$soa" ] && { err "Unable to get SOA"; continue; }
+		serialOnNS=$(echo "$soa" | awk '{ print $(NF-4)}' | egrep '^[0-9]+$')
+		debug "Zone $zoneName: nameserver '$ns': serial: $serialOnNS"
+		[ -z "$serialOnNS" ] && { err "Unable to parse serial from SOA record: '$soa'"; continue; }
+		[ "$serial" -ne "$serialOnNS" ] && { err "Serial mismatch (local: $serial, remote: $serialOnNS)"; continue; }
+		echo "OK"
+	done
+done
